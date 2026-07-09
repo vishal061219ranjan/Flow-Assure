@@ -188,11 +188,6 @@ st.markdown(
         line-height: 1.5;
     }
     
-    /* 5. Hide the entire top toolbar (Share, Edit, GitHub, Menu) */
-    header[data-testid="stHeader"] {
-        display: none !important;
-    }
-    
     </style>
     """,
     unsafe_allow_html=True,
