@@ -30,11 +30,11 @@ Enter well/reservoir/fluid data → auto-calculate PVT properties → generate I
 | Water Properties | McCain |
 
 ### Additional Features
-- 📊 **Compare** all IPR methods on a single chart
-- 📈 **Sensitivity analysis** for Pr, Pb, skin, FE, and Fetkovich n
-- 📥 **Export** IPR data (CSV), plots (PNG), and calculation summaries (TXT)
-- ⚠️ **Smart warnings** for invalid inputs and correlation validity limits
-- 🏷️ **Source tagging** — every calculated value shows whether it's user-input, correlation-derived, or default
+- **Compare** all IPR methods on a single chart
+- **Sensitivity analysis** for Pr, Pb, skin, FE, and Fetkovich n
+- **Export** IPR data (CSV), plots (PNG), and calculation summaries (TXT)
+- **Smart warnings** for invalid inputs and correlation validity limits
+- **Source tagging** — every calculated value shows whether it's user-input, correlation-derived, or default
 
 ---
 
