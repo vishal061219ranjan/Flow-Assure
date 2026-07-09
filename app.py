@@ -188,8 +188,8 @@ st.markdown(
         line-height: 1.5;
     }
     
-    /* 5. Hide the Fork and GitHub links from the header */
-    header[data-testid="stHeader"] a {
+    /* 5. Hide the entire top toolbar (Share, Edit, GitHub, Menu) */
+    header[data-testid="stHeader"] {
         display: none !important;
     }
     
