@@ -188,6 +188,11 @@ st.markdown(
         line-height: 1.5;
     }
     
+    /* 5. Hide the Fork and GitHub links from the header */
+    header[data-testid="stHeader"] a {
+        display: none !important;
+    }
+    
     </style>
     """,
     unsafe_allow_html=True,
