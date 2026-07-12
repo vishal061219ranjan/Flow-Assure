@@ -951,14 +951,17 @@ if generate or True:  # Always show results when inputs change
                     )
 
                     # Plot image download
-                    img_bytes = fig.to_image(format="png", width=1200, height=600, scale=2)
-                    dl_col2.download_button(
-                        "Download Plot (PNG)",
-                        img_bytes,
-                        "ipr_curve.png",
-                        "image/png",
-                        use_container_width=True,
-                    )
+                    try:
+                        img_bytes = fig.to_image(format="png", width=1200, height=600, scale=2)
+                        dl_col2.download_button(
+                            "Download Plot (PNG)",
+                            img_bytes,
+                            "ipr_curve.png",
+                            "image/png",
+                            use_container_width=True,
+                        )
+                    except Exception:
+                        dl_col2.info("PNG download unavailable in cloud mode. Use the 📷 icon on the chart instead.")
 
                     # Summary text
                     summary_lines = [
