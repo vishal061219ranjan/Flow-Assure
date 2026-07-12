@@ -24,6 +24,25 @@ def _safe_log(x: float) -> float:
     return math.log(max(x, 1.0e-30))
 
 
+def _smooth_step(x: float, delta: float = 0.3) -> float:
+    """
+    Smooth Heaviside step function (Teixeira et al., 2015).
+
+    g(x; δ) = (1 + tanh(x / δ)) / 2
+
+    Returns ≈ 1 when x ≫ δ, ≈ 0 when x ≪ −δ, exactly 0.5 when x = 0.
+
+    Reference
+    ---------
+    Teixeira, Secchi & Biscaia (2015), "Two-Phase Flow in Pipes: Numerical
+    Improvements and Qualitative Analysis," Oil & Gas Science and Technology
+    (IFP Energies Nouvelles), DOI: 10.2516/ogst/2013191.
+    """
+    arg = x / max(abs(delta), 1.0e-12)
+    arg = _clamp(arg, -20.0, 20.0)  # prevent tanh overflow
+    return 0.5 * (1.0 + math.tanh(arg))
+
+
 def _griffith_holdup_bb(mixture_velocity: float, superficial_gas_velocity: float, no_slip_liquid_fraction: float) -> float:
     """
     Griffith (1961) Bubble Flow Liquid Holdup
@@ -189,6 +208,103 @@ def _flow_pattern(lambda_l: float, Nfr: float) -> tuple[str, float, float, float
     # 4. Distributed flow
     if (lambda_l < 0.4 and Nfr >=L1) or (lambda_l >= 0.4 and Nfr > L4):
         return "distributed", L1, L2, L3, L4
+
+
+def _smooth_regime_weights(
+    lambda_l: float,
+    Nfr: float,
+    L1: float,
+    L2: float,
+    L3: float,
+    L4: float,
+    delta: float = 0.3,
+) -> tuple[float, float, float, float]:
+    """
+    Compute smooth, continuous regime weights via Teixeira regularization.
+
+    Instead of selecting one flow regime via hard if/elif boundaries,
+    every regime receives a continuous weight in [0, 1].  The weights are
+    normalised to sum to exactly 1.
+
+    Log-space arguments are used — g(ln(NFR / L); δ) rather than
+    g(NFR − L; δ) — so that the blend width is proportional to each
+    boundary's own magnitude.  This is critical when L-values span many
+    orders of magnitude (e.g. L2 ≈ 0.1 vs L4 ≈ 200 000).
+
+    Reference
+    ---------
+    Teixeira, Secchi & Biscaia (2015), DOI: 10.2516/ogst/2013191.
+
+    Parameters
+    ----------
+    lambda_l : float   No-slip liquid fraction, 0 < λL ≤ 1.
+    Nfr      : float   Froude number.
+    L1–L4    : float   Beggs-Brill flow-pattern boundary values.
+    delta    : float   Blend half-width in log-space (default 0.3 ≈ ±35 %).
+
+    Returns
+    -------
+    (w_seg, w_tran, w_int, w_dist) — regime weights, sum = 1.
+    """
+    # Guard all inputs to positive values for safe log()
+    lambda_l = max(lambda_l, 1.0e-8)
+    Nfr = max(Nfr, 1.0e-10)
+    L1 = max(L1, 1.0e-10)
+    L2 = max(L2, 1.0e-10)
+    L3 = max(L3, 1.0e-10)
+    L4 = max(L4, 1.0e-10)
+
+    # ── Smooth indicators for λL thresholds ────────────────────────────────
+    # "below 0.01" → ≈ 1 when λL ≪ 0.01
+    lam_below_001 = _smooth_step(_safe_log(0.01 / lambda_l), delta)
+    lam_above_001 = 1.0 - lam_below_001
+
+    # "below 0.4"  → ≈ 1 when λL ≪ 0.4
+    lam_below_04 = _smooth_step(_safe_log(0.4 / lambda_l), delta)
+    lam_above_04 = 1.0 - lam_below_04
+
+    # ── Smooth indicators for NFR vs L boundaries ─────────────────────────
+    nfr_below_L1 = _smooth_step(_safe_log(L1 / Nfr), delta)
+    nfr_above_L1 = 1.0 - nfr_below_L1
+
+    nfr_below_L2 = _smooth_step(_safe_log(L2 / Nfr), delta)
+    nfr_above_L2 = 1.0 - nfr_below_L2
+
+    nfr_below_L3 = _smooth_step(_safe_log(L3 / Nfr), delta)
+    nfr_above_L3 = 1.0 - nfr_below_L3
+
+    nfr_below_L4 = _smooth_step(_safe_log(L4 / Nfr), delta)
+    nfr_above_L4 = 1.0 - nfr_below_L4
+
+    # ── Regime indicators (mirror the hard B&B map structure) ──────────────
+    #
+    # Segregated:   (λL < 0.01 ∧ NFR < L1)  ∨  (λL ≥ 0.01 ∧ NFR < L2)
+    w_seg = lam_below_001 * nfr_below_L1 + lam_above_001 * nfr_below_L2
+
+    # Transition:   λL ≥ 0.01  ∧  L2 ≤ NFR ≤ L3
+    w_tran = lam_above_001 * nfr_above_L2 * nfr_below_L3
+
+    # Intermittent: (0.01 ≤ λL < 0.4 ∧ L3 < NFR ≤ L1)
+    #             ∨ (λL ≥ 0.4         ∧ L3 < NFR ≤ L4)
+    w_int = (lam_above_001 * lam_below_04 * nfr_above_L3 * nfr_below_L1
+             + lam_above_04 * nfr_above_L3 * nfr_below_L4)
+
+    # Distributed:  (λL < 0.4 ∧ NFR ≥ L1)  ∨  (λL ≥ 0.4 ∧ NFR > L4)
+    w_dist = lam_below_04 * nfr_above_L1 + lam_above_04 * nfr_above_L4
+
+    # ── Normalize so weights sum to exactly 1 ─────────────────────────────
+    total = w_seg + w_tran + w_int + w_dist
+    if total > 1.0e-12:
+        inv = 1.0 / total
+        w_seg *= inv
+        w_tran *= inv
+        w_int *= inv
+        w_dist *= inv
+    else:
+        # Extremely unlikely fallback — default to segregated
+        w_seg, w_tran, w_int, w_dist = 1.0, 0.0, 0.0, 0.0
+
+    return w_seg, w_tran, w_int, w_dist
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -373,62 +489,90 @@ def _beggs_brill_holdup(
     Nfr: float,
     Nlv: float,
     alpha_deg: float,
+    L1: float,
     L2: float,
     L3: float,
+    L4: float,
     apply_payne: bool = True,
 ) -> dict[str, float | str]:
     """
-    Calculate final Beggs-Brill liquid holdup.
+    Calculate final Beggs-Brill liquid holdup with smooth regime blending.
+
+    Uses the Teixeira regularization (DOI: 10.2516/ogst/2013191) to replace
+    hard regime-boundary switches with continuous sigmoid weights.  This
+    eliminates the unphysical pressure-gradient discontinuities that occur
+    when NFR crosses a boundary (e.g. Intermittent ↔ Distributed at L1).
 
     Sequence:
-        1. Calculate horizontal holdup HL(0)
-        2. Apply inclination correction ψ
-        3. If transition, blend segregated and intermittent inclined holdups
-        4. Apply Payne correction
-        5. Apply physical guard: lambda_l <= HL <= 1
+        1. Compute smooth regime weights (Teixeira regularization)
+        2. Compute inclined holdup for segregated, intermittent, distributed
+        3. Fold transition weight into segregated / intermittent via B
+        4. Blend holdups using effective weights
+        5. Apply Payne correction
+        6. Apply physical guard: lambda_l <= HL <= 1
+
+    Far from any boundary, exactly one weight ≈ 1 and the rest ≈ 0, so
+    results are identical to standard Beggs-Brill.
     """
-    transition_B = None
+    # ── 1. Smooth regime weights ───────────────────────────────────────────
+    w_seg, w_tran, w_int, w_dist = _smooth_regime_weights(
+        lambda_l, Nfr, L1, L2, L3, L4,
+    )
 
-    if pattern == "transition":
-        # For transition, calculate segregated and intermittent inclined holdups separately.
-        seg = _holdup_for_non_transition_pattern("segregated", lambda_l, Nfr, Nlv, alpha_deg)
-        inter = _holdup_for_non_transition_pattern("intermittent", lambda_l, Nfr, Nlv, alpha_deg)
+    # ── 2. Compute inclined holdup for each base regime ────────────────────
+    seg = _holdup_for_non_transition_pattern(
+        "segregated", lambda_l, Nfr, Nlv, alpha_deg,
+    )
+    inter = _holdup_for_non_transition_pattern(
+        "intermittent", lambda_l, Nfr, Nlv, alpha_deg,
+    )
+    dist = _holdup_for_non_transition_pattern(
+        "distributed", lambda_l, Nfr, Nlv, alpha_deg,
+    )
 
-        B = _transition_blend_factor(lambda_l, Nfr, L2, L3)
-        transition_B = B
+    # ── 3. Transition blend factor B ───────────────────────────────────────
+    # Standard B&B:  HL_transition = B · HL_seg + (1−B) · HL_int
+    # Fold transition weight into segregated and intermittent.
+    B = _transition_blend_factor(lambda_l, Nfr, L2, L3)
 
-        # User-confirmed formula:
-        # HL_transition = B * HL_segregated + (1 - B) * HL_intermittent
-        HL_alpha = B * seg["HL_alpha"] + (1.0 - B) * inter["HL_alpha"]
+    eff_seg = w_seg + w_tran * B
+    eff_int = w_int + w_tran * (1.0 - B)
+    eff_dist = w_dist
 
-        # Store weighted diagnostic values for table/debugging.
-        HL0 = B * seg["HL0"] + (1.0 - B) * inter["HL0"]
-        psi = B * seg["psi"] + (1.0 - B) * inter["psi"]
-        C = B * seg["C"] + (1.0 - B) * inter["C"]
+    # ── 4. Blended inclined holdup ────────────────────────────────────────
+    HL_alpha = (eff_seg * seg["HL_alpha"]
+                + eff_int * inter["HL_alpha"]
+                + eff_dist * dist["HL_alpha"])
 
-    else:
-        vals = _holdup_for_non_transition_pattern(pattern, lambda_l, Nfr, Nlv, alpha_deg)
-        HL0 = vals["HL0"]
-        psi = vals["psi"]
-        C = vals["C"]
-        HL_alpha = vals["HL_alpha"]
+    # Weighted diagnostic values for table / debugging.
+    HL0 = (eff_seg * seg["HL0"]
+           + eff_int * inter["HL0"]
+           + eff_dist * dist["HL0"])
+    psi = (eff_seg * seg["psi"]
+           + eff_int * inter["psi"]
+           + eff_dist * dist["psi"])
+    C = (eff_seg * seg["C"]
+         + eff_int * inter["C"]
+         + eff_dist * dist["C"])
 
-    # Payne correction.
+    # Report transition B only when transition weight is significant.
+    transition_B = B if w_tran > 0.01 else None
+
+    # ── 5. Payne correction ───────────────────────────────────────────────
     # User-confirmed default:
     #   Uphill   → HL_corrected = 0.924 * HL(alpha)
     #   Downhill → HL_corrected = 0.685 * HL(alpha)
-    # Horizontal corrected.
     if not apply_payne or abs(alpha_deg) < 1.0e-12:
-            payne_factor = 1.0
+        payne_factor = 1.0
     elif alpha_deg > 0.0:
-            payne_factor = 0.924
+        payne_factor = 0.924
     else:
-            payne_factor = 0.685
+        payne_factor = 0.685
 
     HL_payne = payne_factor * HL_alpha
 
-    # Final physical guard. Payne correction can reduce HL below lambda_l,
-    # so this guard is important.
+    # ── 6. Physical guard ─────────────────────────────────────────────────
+    # Payne correction can reduce HL below lambda_l, so this guard matters.
     HL_final = _clamp(HL_payne, lambda_l, 1.0)
 
     return {
@@ -756,8 +900,10 @@ def pressure_gradient_beggs_brill(
         Nfr=Nfr,
         Nlv=Nlv,
         alpha_deg=alpha_deg,
+        L1=L1,
         L2=L2,
         L3=L3,
+        L4=L4,
         apply_payne=apply_payne,
     )
 
